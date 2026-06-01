@@ -137,19 +137,21 @@ class LogReader {
         let date = dateFormatter.date(from: dateString)
 
         let split = message.split(separator: ",")
-        var trackName: String?
+
+        // The title is wrapped in single quotes and can itself contain
+        // apostrophes (e.g. "I'm On Fire") or commas. Pull the whole thing out by
+        // its delimiters rather than splitting on "," or stopping at the first
+        // inner quote: otherwise the parsed name won't match MediaRemote's title,
+        // the format and track entries land under different collection keys
+        // (e.g. "I" vs "I'm On Fire") and never pair, so the device never switches.
+        var trackName = message
+            .firstSubstring(between: "mediaFormatinfo '", and: "' ,")
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
         var isLossless: Bool?
         var bitDepth: Int?
         var sampleRate: Int?
 
         for element in split {
-
-            // <private> in default circumstances
-            if trackName == nil, element.hasPrefix("mediaFormatinfo") {
-                guard let substring = element.firstSubstring(between: "\'", and: "\'") else { continue }
-                trackName = String(substring)
-                continue
-            }
 
             // notes: there is a field that may be "lossless", "high res lossless" and "stereo (lossy)"
 
