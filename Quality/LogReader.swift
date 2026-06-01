@@ -9,6 +9,28 @@ import Foundation
 import Combine
 import Sweep
 
+// Sample-rate signals in the macOS unified log (as of macOS 26). If a future
+// OS release breaks rate detection, this is the map of what's available:
+//
+//  1. com.apple.Music:ampplay — "asbdSampleRate = N kHz"
+//     The RENDERED rate Music outputs; it tracks the output device's *current*
+//     rate, so a hi-res track on a device sitting at a lower rate reads low.
+//     Upstream v3 uses this as its only source, which is why it never climbs to
+//     hi-res once the device has been pulled down. We keep it only as a fallback
+//     and for the track name (the activeFormat line below has no title).
+//
+//  2. com.apple.amp.mediaplaybackcore:PlaybackEvents —
+//     "activeFormat: tier: ...; groupID: audio-alac-stereo-96000-24; ..."
+//     The track's INTENDED lossless format (true source rate + depth),
+//     independent of what got rendered. This is our authoritative source; see
+//     processActiveFormatLine.
+//
+//  3. com.apple.coreaudio:ac — "ACAppleLosslessDecoder.cpp ... Input format:
+//     2 ch, 96000 Hz, alac ... from 24-bit source"
+//     Also a true source rate (the decoder's input). This is what upstream read
+//     pre-v3 ("use only coreaudio log", commit d782922). Authoritative but has
+//     no track name and is very chatty (~1600 lines/15min). Documented as a
+//     fallback if (2) ever stops working.
 class LogReader {
 
     let entryStream = PassthroughSubject<CMEntry, Never>()
