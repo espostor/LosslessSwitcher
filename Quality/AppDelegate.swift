@@ -15,9 +15,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     // https://stackoverflow.com/a/66160164
     static private(set) var instance: AppDelegate! = nil
-    var outputDevices: OutputDevices!
+    // Shared with MenuBarController; the MediaRemoteController that drives it is
+    // owned by MenuBarController so there is exactly one of each.
+    var outputDevices: OutputDevices { OutputDevices.shared }
     private let defaults = Defaults.shared
-    private var mrController: MediaRemoteController!
     private var devicesMenu: NSMenu!
     
     var statusItem: NSStatusItem?
@@ -58,9 +59,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.instance = self
-        outputDevices = OutputDevices()
-        mrController = MediaRemoteController(outputDevices: outputDevices)
-        
+        // OutputDevices + its MediaRemoteController are created once, by
+        // MenuBarController; AppDelegate shares the same instance via `outputDevices`.
+
         checkPermissions()
 //        
 //        let menu = NSMenu()

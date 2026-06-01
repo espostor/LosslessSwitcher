@@ -53,8 +53,15 @@ class OutputDevices: ObservableObject {
     
     var timerActive = false
     var timerCalls = 0
-    
-    init() {
+
+    // Single shared instance: the app has both a SwiftUI menu-bar controller and
+    // an AppDelegate that need the same OutputDevices. Two instances meant two
+    // LogReaders (two `log stream` processes) and the device being switched twice.
+    // Lazy access avoids the launch-order trap (nil is impossible — whoever
+    // touches it first creates it).
+    static let shared = OutputDevices()
+
+    private init() {
         self.outputDevices = self.coreAudio.allOutputDevices
         self.defaultOutputDevice = self.coreAudio.defaultOutputDevice
         self.getDeviceSampleRate()
