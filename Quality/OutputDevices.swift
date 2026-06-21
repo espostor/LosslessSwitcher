@@ -8,6 +8,7 @@
 import Combine
 import Foundation
 import SimplyCoreAudio
+import CoreAudio
 import CoreAudioTypes
 import MediaRemoteAdapter
 import OrderedCollections
@@ -29,6 +30,11 @@ class OutputDevices: ObservableObject {
     private var timerCancellable: AnyCancellable?
     private var outputSelectionCancellable: AnyCancellable?
     private var sampleRateChangeCancellable: AnyCancellable?
+    private var unknownSourceTimerCancellable: AnyCancellable?
+    // Apps whose rate we handle directly; anything else producing output is "unknown".
+    private let handledOutputBundleIDs: Set<String> = ["com.apple.Music", "com.apple.TV", "com.qobuz.desktop"]
+    private var unknownSourceStreak = 0
+    private var didPinDefaultForUnknown = false
 
     private let logReader = LogReader()
     private var entryStreamReceiver: AnyCancellable?
@@ -170,7 +176,16 @@ class OutputDevices: ObservableObject {
         enableBitDepthDetectionCancellable = Defaults.shared.$userPreferBitDepthDetection.sink(receiveValue: { newValue in
             self.enableBitDepthDetection = newValue
         })
-        
+
+        // Poll the per-process audio API for output from apps we don't handle
+        // (browsers, video streaming, games). They don't expose a rate and don't
+        // switch the device, so we pin it to 48 kHz for them. Cheap property reads.
+        unknownSourceTimerCancellable = Timer.publish(every: 2, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.processQueue.async { self?.evaluateUnknownSource() }
+            }
+
     }
     
     deinit {
@@ -179,6 +194,7 @@ class OutputDevices: ObservableObject {
         timerCancellable?.cancel()
         enableBitDepthDetectionCancellable?.cancel()
         sampleRateChangeCancellable?.cancel()
+        unknownSourceTimerCancellable?.cancel()
         entryStreamReceiver?.cancel()
         //timer.upstream.connect().cancel()
     }
@@ -208,6 +224,77 @@ class OutputDevices: ObservableObject {
         let defaultDevice = self.selectedOutputDevice ?? self.defaultOutputDevice
         guard let sampleRate = defaultDevice?.nominalSampleRate else { return }
         self.updateSampleRate(sampleRate, bitDepth: nil)
+    }
+
+    // Bundle ids of every process currently producing audio OUTPUT, via the
+    // macOS 14.2+ per-process Core Audio API. Read-only; needs no permission.
+    private func outputProducingBundleIDs() -> Set<String> {
+        guard #available(macOS 14.2, *) else { return [] }
+        let sys = AudioObjectID(kAudioObjectSystemObject)
+        var listAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyProcessObjectList,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(sys, &listAddr, 0, nil, &size) == noErr else { return [] }
+        let count = Int(size) / MemoryLayout<AudioObjectID>.size
+        guard count > 0 else { return [] }
+        var procs = [AudioObjectID](repeating: 0, count: count)
+        guard AudioObjectGetPropertyData(sys, &listAddr, 0, nil, &size, &procs) == noErr else { return [] }
+
+        var producers = Set<String>()
+        for proc in procs {
+            var outAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyIsRunningOutput,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var isOutput: UInt32 = 0
+            var outSize = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioObjectGetPropertyData(proc, &outAddr, 0, nil, &outSize, &isOutput) == noErr,
+                  isOutput != 0 else { continue }
+
+            var bidAddr = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyBundleID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain)
+            var cfBundle: Unmanaged<CFString>? = nil
+            var bidSize = UInt32(MemoryLayout<CFString?>.size)
+            guard AudioObjectGetPropertyData(proc, &bidAddr, 0, nil, &bidSize, &cfBundle) == noErr,
+                  let bundle = cfBundle?.takeRetainedValue() as String?, !bundle.isEmpty else { continue }
+            producers.insert(bundle)
+        }
+        return producers
+    }
+
+    // When audio is coming ONLY from an app we don't handle (e.g. a browser),
+    // pin the device to 48 kHz — those apps don't report a rate or switch the
+    // device themselves, and 48 kHz is the near-universal video/web rate.
+    private func evaluateUnknownSource() {
+        let producers = outputProducingBundleIDs()
+
+        // A handled source (Music/TV/Qobuz) is producing audio → let its own
+        // path own the rate; don't override it.
+        if !producers.isDisjoint(with: handledOutputBundleIDs) {
+            unknownSourceStreak = 0
+            didPinDefaultForUnknown = false
+            return
+        }
+
+        let unknown = producers
+            .subtracting(handledOutputBundleIDs)
+            .subtracting(["com.vincent-neo.LosslessSwitcher"])
+        guard !unknown.isEmpty else {
+            unknownSourceStreak = 0
+            didPinDefaultForUnknown = false
+            return
+        }
+
+        // Require the output to persist a couple of ticks so brief system sounds
+        // (alerts, notifications) don't trigger a switch. Pin once per session.
+        unknownSourceStreak += 1
+        guard unknownSourceStreak >= 2, !didPinDefaultForUnknown else { return }
+        didPinDefaultForUnknown = true
+        self.switchLatestSampleRate(format: AudioFormat(sampleRate: 48000, bitDepth: nil))
     }
     
     func getSampleRateFromAppleScript() -> Double? {
