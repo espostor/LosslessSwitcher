@@ -57,9 +57,12 @@ class OutputDevices: ObservableObject {
     var trackAndBitDepth = [MediaTrack : Int]()
     var previousTrack: MediaTrack?
     var currentTrack: MediaTrack?
-    // Bundle id of the current now-playing app (from MediaRemote), used to gate
-    // direct switching for non-Music apps like the TV app.
+    // Bundle id + play state of the current now-playing app (from MediaRemote).
+    // Used to gate direct switching for the TV app, and to tell whether a handled
+    // app is actually playing vs. just holding its output stream open while paused
+    // (which Electron apps like Qobuz do).
     var currentPlayerBundleID: String?
+    var currentPlayerIsPlaying = false
 
     var timerActive = false
     var timerCalls = 0
@@ -272,18 +275,20 @@ class OutputDevices: ObservableObject {
     private func evaluateUnknownSource() {
         let producers = outputProducingBundleIDs()
 
-        // A handled source (Music/TV/Qobuz) is producing audio → let its own
-        // path own the rate; don't override it.
-        if !producers.isDisjoint(with: handledOutputBundleIDs) {
+        let unknown = producers
+            .subtracting(handledOutputBundleIDs)
+            .subtracting(["com.vincent-neo.LosslessSwitcher"])
+        guard !unknown.isEmpty else {
             unknownSourceStreak = 0
             didPinDefaultForUnknown = false
             return
         }
 
-        let unknown = producers
-            .subtracting(handledOutputBundleIDs)
-            .subtracting(["com.vincent-neo.LosslessSwitcher"])
-        guard !unknown.isEmpty else {
+        // Defer to a handled source only when it is the active now-playing app AND
+        // actually playing. We can't use IsRunningOutput for this because Electron
+        // apps (Qobuz) keep their output stream open — and thus look "active" — even
+        // when paused; MediaRemote's isPlaying reflects the true state.
+        if let bid = currentPlayerBundleID, handledOutputBundleIDs.contains(bid), currentPlayerIsPlaying {
             unknownSourceStreak = 0
             didPinDefaultForUnknown = false
             return
@@ -496,9 +501,10 @@ class OutputDevices: ObservableObject {
     
     func trackDidChange(_ newTrack: TrackInfo) {
         let mt = MediaTrack(trackInfo: newTrack)
-        // Track which app is now-playing (set before the same-track guard so it
-        // stays current even when the same item keeps playing).
+        // Track which app is now-playing and whether it's actually playing (set
+        // before the same-track guard so play/pause of the same item updates it).
         self.currentPlayerBundleID = newTrack.payload.bundleIdentifier
+        self.currentPlayerIsPlaying = newTrack.payload.isPlaying ?? false
 
         guard previousTrack != mt else { return }
         self.previousTrack = self.currentTrack
