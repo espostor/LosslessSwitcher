@@ -74,9 +74,12 @@ class LogReader {
             "compact",
             "--no-backtrace",
             "--predicate",
-            // ampplay carries the rendered (possibly downsampled) rate + track name;
-            // PlaybackEvents carries the track's *intended* lossless format.
-            "process == \"Music\" AND (category == \"ampplay\" OR category == \"PlaybackEvents\")"
+            // Music: ampplay carries the rendered (possibly downsampled) rate + track
+            // name; PlaybackEvents carries the track's *intended* lossless format.
+            // TV: the CoreMedia/AudioToolbox decoder logs "Input format: N ch, M Hz"
+            // once per playback/format change — the TV app's source rate (it doesn't
+            // switch the device itself, so we do it for it).
+            "(process == \"Music\" AND (category == \"ampplay\" OR category == \"PlaybackEvents\")) OR (process == \"TV\" AND eventMessage CONTAINS \"Input format:\")"
         ]
 
         let pipe = Pipe()
@@ -120,6 +123,26 @@ class LogReader {
         else if line.contains("activeFormat: tier: ") {
             processActiveFormatLine(line)
         }
+        else if line.contains("Input format:") {
+            // Only the TV clause of the predicate produces these (Music's coreaudio
+            // logs aren't in our stream).
+            processExternalInputFormatLine(line)
+        }
+    }
+
+    // A non-Music Apple app (the TV app) decoding audio: the AudioToolbox decoder
+    // logs e.g. "Input format:  2 ch,  48000 Hz, aac". There's no track name here,
+    // so we mark the entry external and switch the device directly. Codec/loss is
+    // irrelevant for video — we just match the device to the content rate.
+    private func processExternalInputFormatLine(_ line: String) {
+        guard let dateSubstring = line.firstSubstring(between: .start, and: " Df ") else { return }
+        guard let rateChunk = line.firstSubstring(between: "ch,", and: "Hz") else { return }
+        let digits = String(rateChunk).filter { $0.isNumber }
+        guard let sampleRate = Int(digits), sampleRate > 0 else { return }
+        guard let date = dateFormatter.date(from: String(dateSubstring)) else { return }
+
+        let entry = CMEntry(date: date, trackName: nil, bitDepth: nil, sampleRate: sampleRate, isExternal: true)
+        entryStream.send(entry)
     }
 
     // The original log source: the rate here (`asbdSampleRate`) is what Music

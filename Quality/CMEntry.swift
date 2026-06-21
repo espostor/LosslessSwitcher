@@ -12,4 +12,7 @@ struct CMEntry {
     let trackName: String?
     let bitDepth: Int?
     let sampleRate: Int
+    // true when the rate comes from a non-Music Apple app (e.g. the TV app),
+    // which has no track-name pairing — switch the device directly instead.
+    var isExternal: Bool = false
 }

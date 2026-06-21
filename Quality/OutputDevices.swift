@@ -51,7 +51,10 @@ class OutputDevices: ObservableObject {
     var trackAndBitDepth = [MediaTrack : Int]()
     var previousTrack: MediaTrack?
     var currentTrack: MediaTrack?
-    
+    // Bundle id of the current now-playing app (from MediaRemote), used to gate
+    // direct switching for non-Music apps like the TV app.
+    var currentPlayerBundleID: String?
+
     var timerActive = false
     var timerCalls = 0
 
@@ -72,7 +75,17 @@ class OutputDevices: ObservableObject {
         // WIP: This code is dizzying to work with...
         entryStreamReceiver = logReader.entryStream.receive(on: pairHandlingQueue).sink { [weak self] entry in
             //print("ESR", self.lastTrackChangeTime, self.currentTrack, entry.date, entry.trackName, entry.sampleRate)
-            
+
+            // External (non-Music) sources like the TV app have no track-name pairing.
+            // Switch the device directly, but only when that app is the active
+            // now-playing source (so a background TV decode can't hijack Music).
+            if entry.isExternal {
+                guard self?.currentPlayerBundleID == "com.apple.TV" else { return }
+                let format = AudioFormat(sampleRate: entry.sampleRate, bitDepth: entry.bitDepth)
+                self?.switchLatestSampleRate(format: format)
+                return
+            }
+
             let key = entry.trackName ?? UUID().uuidString
             
             if entry.trackName == nil, let lastKey = self?.collection.keys.last, let lastDate = self?.collection[lastKey]?.format?.date {
@@ -396,7 +409,10 @@ class OutputDevices: ObservableObject {
     
     func trackDidChange(_ newTrack: TrackInfo) {
         let mt = MediaTrack(trackInfo: newTrack)
-        
+        // Track which app is now-playing (set before the same-track guard so it
+        // stays current even when the same item keeps playing).
+        self.currentPlayerBundleID = newTrack.payload.bundleIdentifier
+
         guard previousTrack != mt else { return }
         self.previousTrack = self.currentTrack
         self.currentTrack = mt
