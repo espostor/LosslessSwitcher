@@ -28,7 +28,8 @@ class OutputDevices: ObservableObject {
     private var defaultChangesCancellable: AnyCancellable?
     private var timerCancellable: AnyCancellable?
     private var outputSelectionCancellable: AnyCancellable?
-    
+    private var sampleRateChangeCancellable: AnyCancellable?
+
     private let logReader = LogReader()
     private var entryStreamReceiver: AnyCancellable?
     private var lastTrackChangeTime: Date?
@@ -132,7 +133,23 @@ class OutputDevices: ObservableObject {
                 self.defaultOutputDevice = self.coreAudio.defaultOutputDevice
                 self.getDeviceSampleRate()
             })
-        
+
+        // Keep the menu-bar readout in sync with the device's ACTUAL nominal rate,
+        // whoever changes it — LS itself for Apple Music, or another app that
+        // drives the device directly (e.g. Qobuz's exclusive mode). SimplyCoreAudio
+        // posts this on the kAudioDevicePropertyNominalSampleRate listener.
+        sampleRateChangeCancellable =
+            NotificationCenter.default.publisher(for: .deviceNominalSampleRateDidChange).sink(receiveValue: { [weak self] notification in
+                guard let self else { return }
+                // Only reflect the device we're actually outputting to.
+                if let changed = notification.object as? AudioDevice,
+                   let current = self.selectedOutputDevice ?? self.defaultOutputDevice,
+                   changed != current {
+                    return
+                }
+                self.getDeviceSampleRate()
+            })
+
         outputSelectionCancellable = $selectedOutputDevice.sink(receiveValue: { _ in
             self.getDeviceSampleRate()
         })
@@ -148,6 +165,7 @@ class OutputDevices: ObservableObject {
         defaultChangesCancellable?.cancel()
         timerCancellable?.cancel()
         enableBitDepthDetectionCancellable?.cancel()
+        sampleRateChangeCancellable?.cancel()
         entryStreamReceiver?.cancel()
         //timer.upstream.connect().cancel()
     }
