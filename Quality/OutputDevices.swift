@@ -186,6 +186,9 @@ class OutputDevices: ObservableObject {
         unknownSourceTimerCancellable = Timer.publish(every: 2, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
+                // Watchdog: respawn the log reader if it died (no-op if alive), so
+                // LS recovers from a reaped `log stream` without an app restart.
+                self?.logReader.spawnProcessIfNeeded()
                 self?.processQueue.async { self?.evaluateUnknownSource() }
             }
 

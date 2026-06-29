@@ -58,9 +58,18 @@ class LogReader {
         self.dateFormatter = dateFormatter
     }
 
+    // Safe to call repeatedly (e.g. from a watchdog timer). Respawns the log
+    // stream if it was never started OR has since died — macOS reaps long-running
+    // `log stream` processes, and without this LS would silently stop switching.
+    // Serialized on main so the watchdog, terminationHandler, and init don't race.
     func spawnProcessIfNeeded() {
-        guard process == nil else { return }
-        self.spawnProcess()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let process = self.process, process.isRunning { return }
+            self.process = nil
+            self.buffer = ""
+            self.spawnProcess()
+        }
     }
 
     private func spawnProcess() {
@@ -96,11 +105,24 @@ class LogReader {
             self?.ingest(chunk)
         }
 
+        // If the log stream ever exits (system reaped it, crash, etc.), respawn it
+        // shortly so rate switching keeps working without needing an app restart.
+        process.terminationHandler = { [weak self] _ in
+            self?.process = nil
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+                self?.spawnProcessIfNeeded()
+            }
+        }
+
         do {
             try process.run()
         }
         catch {
             print("ProcessErr \(error)")
+            self.process = nil
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.spawnProcessIfNeeded()
+            }
         }
     }
 
