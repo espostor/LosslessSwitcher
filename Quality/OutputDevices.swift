@@ -182,7 +182,8 @@ class OutputDevices: ObservableObject {
 
         // Poll the per-process audio API for output from apps we don't handle
         // (browsers, video streaming, games). They don't expose a rate and don't
-        // switch the device, so we pin it to 48 kHz for them. Cheap property reads.
+        // switch the device, so we pin it to 384 kHz for them (ZH3 workaround; see
+        // evaluateUnknownSource). Cheap property reads.
         unknownSourceTimerCancellable = Timer.publish(every: 2, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
@@ -273,8 +274,12 @@ class OutputDevices: ObservableObject {
     }
 
     // When audio is coming ONLY from an app we don't handle (e.g. a browser),
-    // pin the device to 48 kHz — those apps don't report a rate or switch the
-    // device themselves, and 48 kHz is the near-universal video/web rate.
+    // pin the device to 384 kHz — those apps don't report a rate or switch the
+    // device themselves. NOTE: normally 48 kHz (the video/web rate) would be the
+    // natural choice, but this is pinned high (384 kHz) as a workaround for a Fosi
+    // ZH3 firmware bug that drops audio in the silences between speech at normal
+    // rates; per Fosi's FAQ, running at 384 kHz avoids it. Revert to 48000 once the
+    // ZH3 firmware is updated (the update needs Windows).
     private func evaluateUnknownSource() {
         let producers = outputProducingBundleIDs()
 
@@ -302,7 +307,7 @@ class OutputDevices: ObservableObject {
         unknownSourceStreak += 1
         guard unknownSourceStreak >= 2, !didPinDefaultForUnknown else { return }
         didPinDefaultForUnknown = true
-        self.switchLatestSampleRate(format: AudioFormat(sampleRate: 48000, bitDepth: nil))
+        self.switchLatestSampleRate(format: AudioFormat(sampleRate: 384000, bitDepth: 24))
     }
     
     func getSampleRateFromAppleScript() -> Double? {
