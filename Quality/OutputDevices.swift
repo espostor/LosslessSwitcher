@@ -35,6 +35,10 @@ class OutputDevices: ObservableObject {
     private let handledOutputBundleIDs: Set<String> = ["com.apple.Music", "com.apple.TV", "com.qobuz.desktop"]
     private var unknownSourceStreak = 0
     private var didPinDefaultForUnknown = false
+    // Last rate LS set for a handled source (Music/TV/Qobuz). Used to restore the
+    // device after an unknown-source pin ends, since an ongoing handled track won't
+    // re-log to trigger a fresh switch.
+    private var lastHandledRate: Float64?
 
     private let logReader = LogReader()
     private var entryStreamReceiver: AnyCancellable?
@@ -282,32 +286,45 @@ class OutputDevices: ObservableObject {
     // ZH3 firmware is updated (the update needs Windows).
     private func evaluateUnknownSource() {
         let producers = outputProducingBundleIDs()
-
         let unknown = producers
             .subtracting(handledOutputBundleIDs)
             .subtracting(["com.vincent-neo.LosslessSwitcher"])
+
+        // A handled source (Music/TV/Qobuz) is the active now-playing app AND actually
+        // playing? Can't use IsRunningOutput — Electron apps (Qobuz) keep their output
+        // stream open while paused; MediaRemote's isPlaying is the truth.
+        let handledPlaying = (currentPlayerBundleID.map { handledOutputBundleIDs.contains($0) } ?? false)
+            && currentPlayerIsPlaying
+
+        // Handled source active → stop pinning. If we HAD pinned for a now-inactive
+        // unknown source, restore the handled source's last rate: an ongoing track
+        // won't re-log, so nothing else would move the device off the pin.
+        if handledPlaying {
+            unknownSourceStreak = 0
+            if didPinDefaultForUnknown {
+                didPinDefaultForUnknown = false
+                if let target = lastHandledRate {
+                    self.switchLatestSampleRate(format: AudioFormat(sampleRate: Int(target), bitDepth: nil))
+                }
+            }
+            return
+        }
+
+        // Nothing unknown producing. Leave the rate as-is, but KEEP the pin flag so a
+        // handled source that starts later still restores its rate — don't reset it
+        // here, or a briefly-stale now-playing would drop the restore.
         guard !unknown.isEmpty else {
             unknownSourceStreak = 0
-            didPinDefaultForUnknown = false
             return
         }
 
-        // Defer to a handled source only when it is the active now-playing app AND
-        // actually playing. We can't use IsRunningOutput for this because Electron
-        // apps (Qobuz) keep their output stream open — and thus look "active" — even
-        // when paused; MediaRemote's isPlaying reflects the true state.
-        if let bid = currentPlayerBundleID, handledOutputBundleIDs.contains(bid), currentPlayerIsPlaying {
-            unknownSourceStreak = 0
-            didPinDefaultForUnknown = false
-            return
-        }
-
-        // Require the output to persist a couple of ticks so brief system sounds
-        // (alerts, notifications) don't trigger a switch. Pin once per session.
+        // Unknown source producing, no handled source playing → pin (after a couple
+        // of ticks so brief system sounds don't trigger it). isUnknownSourcePin keeps
+        // the pin from overwriting the remembered handled rate.
         unknownSourceStreak += 1
         guard unknownSourceStreak >= 2, !didPinDefaultForUnknown else { return }
         didPinDefaultForUnknown = true
-        self.switchLatestSampleRate(format: AudioFormat(sampleRate: 384000, bitDepth: 24))
+        self.switchLatestSampleRate(format: AudioFormat(sampleRate: 384000, bitDepth: 24), isUnknownSourcePin: true)
     }
     
     func getSampleRateFromAppleScript() -> Double? {
@@ -359,7 +376,7 @@ class OutputDevices: ObservableObject {
         return allStats
     }
     
-    func switchLatestSampleRate(format: AudioFormat) {
+    func switchLatestSampleRate(format: AudioFormat, isUnknownSourcePin: Bool = false) {
         let defaultDevice = self.selectedOutputDevice ?? self.defaultOutputDevice
         
         if let supported = defaultDevice?.nominalSampleRates {
@@ -408,6 +425,11 @@ class OutputDevices: ObservableObject {
                     defaultDevice?.setNominalSampleRate(suitableFormat.mSampleRate)
                 }
                 self.updateSampleRate(suitableFormat.mSampleRate, bitDepth: Int(suitableFormat.mBitsPerChannel))
+                // Remember a real handled-source rate so we can restore it after an
+                // unknown-source pin (the pin itself must not overwrite it).
+                if !isUnknownSourcePin {
+                    self.lastHandledRate = suitableFormat.mSampleRate
+                }
                 if let currentTrack = currentTrack {
                     self.trackAndSample[currentTrack] = suitableFormat.mSampleRate
                     self.trackAndBitDepth[currentTrack] = Int(suitableFormat.mBitsPerChannel)
