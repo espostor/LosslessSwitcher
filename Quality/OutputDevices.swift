@@ -277,6 +277,16 @@ class OutputDevices: ObservableObject {
         return producers
     }
 
+    // RATE-ARBITRATION POLICY (multiple simultaneous sources): LS keys off the
+    // system's single "now-playing" app. Whatever is the active now-playing source
+    // wins the rate — Music/TV switch to their native rate only while now-playing;
+    // an unknown source gets the pin only when no handled source is now-playing+
+    // playing; other background audio just mixes/resamples into whatever the active
+    // source set. There is deliberately NO explicit multi-source priority resolver.
+    // USER BEWARE: for bit-perfect playback of a lossless track, don't run any other
+    // audio source at the same time — a second source (esp. Qobuz, which drives the
+    // device itself) can pull the rate off the lossless track's native value.
+    //
     // When audio is coming ONLY from an app we don't handle (e.g. a browser),
     // pin the device to 384 kHz — those apps don't report a rate or switch the
     // device themselves. NOTE: normally 48 kHz (the video/web rate) would be the
