@@ -436,9 +436,14 @@ class OutputDevices: ObservableObject {
                 }
                 self.updateSampleRate(suitableFormat.mSampleRate, bitDepth: Int(suitableFormat.mBitsPerChannel))
                 // Remember a real handled-source rate so we can restore it after an
-                // unknown-source pin (the pin itself must not overwrite it).
+                // unknown-source pin (the pin itself must not overwrite it). Applying a
+                // handled rate also means the device is no longer sitting on the pin, so
+                // clear the latch — otherwise it stays stuck true (a handled track logs
+                // straight through here, bypassing evaluateUnknownSource's restore
+                // branch) and every future unknown source is blocked from re-pinning.
                 if !isUnknownSourcePin {
                     self.lastHandledRate = suitableFormat.mSampleRate
+                    self.didPinDefaultForUnknown = false
                 }
                 if let currentTrack = currentTrack {
                     self.trackAndSample[currentTrack] = suitableFormat.mSampleRate
