@@ -39,6 +39,10 @@ class OutputDevices: ObservableObject {
     // device after an unknown-source pin ends, since an ongoing handled track won't
     // re-log to trigger a fresh switch.
     private var lastHandledRate: Float64?
+    // The rate actually applied by the most recent unknown-source pin (the device's
+    // nearest supported rate to 384 kHz). Compared against the live device rate so a
+    // pin that got clobbered by another app is re-applied; nil when no pin is active.
+    private var pinAppliedRate: Float64?
 
     private let logReader = LogReader()
     private var entryStreamReceiver: AnyCancellable?
@@ -332,7 +336,18 @@ class OutputDevices: ObservableObject {
         // of ticks so brief system sounds don't trigger it). isUnknownSourcePin keeps
         // the pin from overwriting the remembered handled rate.
         unknownSourceStreak += 1
-        guard unknownSourceStreak >= 2, !didPinDefaultForUnknown else { return }
+        guard unknownSourceStreak >= 2 else { return }
+
+        // Hold the pin against the LIVE device rate rather than a "did we pin" latch.
+        // Other apps move the device out from under us — starting Podcasts drops a
+        // 384 kHz device to 48 kHz — and that happens with no handled-source switch to
+        // clear the latch, so a latch-only guard would leave the pin marked active
+        // while the device sat at the wrong rate, never re-pinning until an app
+        // restart. Comparing rates makes this self-correcting.
+        let deviceRate = (self.selectedOutputDevice ?? self.defaultOutputDevice)?.nominalSampleRate
+        if didPinDefaultForUnknown, let applied = pinAppliedRate, let deviceRate, deviceRate == applied {
+            return
+        }
         didPinDefaultForUnknown = true
         self.switchLatestSampleRate(format: AudioFormat(sampleRate: 384000, bitDepth: 24), isUnknownSourcePin: true)
     }
@@ -444,6 +459,13 @@ class OutputDevices: ObservableObject {
                 if !isUnknownSourcePin {
                     self.lastHandledRate = suitableFormat.mSampleRate
                     self.didPinDefaultForUnknown = false
+                    self.pinAppliedRate = nil
+                }
+                else {
+                    // Record what the pin actually resolved to (the device's nearest
+                    // supported rate), so evaluateUnknownSource can tell "still pinned"
+                    // from "something moved the device off the pin".
+                    self.pinAppliedRate = suitableFormat.mSampleRate
                 }
                 if let currentTrack = currentTrack {
                     self.trackAndSample[currentTrack] = suitableFormat.mSampleRate
